@@ -12,12 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//go:build darwin
+//go:build darwin || linux
 
 package main
 
 /*
 #cgo darwin LDFLAGS: -framework GSS
+#cgo linux LDFLAGS: -lgssapi_krb5
 #ifdef __APPLE__
 #include <GSS/GSS.h>
 #else
