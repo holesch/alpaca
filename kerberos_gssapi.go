@@ -17,12 +17,22 @@
 package main
 
 /*
-#cgo LDFLAGS: -framework GSS
+#cgo darwin LDFLAGS: -framework GSS
+#ifdef __APPLE__
 #include <GSS/GSS.h>
+#else
+#include <gssapi/gssapi.h>
+#endif
+#include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
+
+// GSS_SPNEGO_MECHANISM is Apple-only, so spell out the SPNEGO OID
+// 1.3.6.1.5.5.2 (RFC 4178).
+static gss_OID_desc spnegoMechanism = {6, "\x2b\x06\x01\x05\x05\x02"};
 
 // hasCredential checks if the current user has a valid Kerberos credential
-// by attempting to acquire the default credential via GSS.framework.
+// by attempting to acquire the default credential.
 // Returns 1 if a credential is available, 0 otherwise.
 static int hasCredential() {
     OM_uint32 major, minor;
@@ -76,7 +86,7 @@ static OM_uint32 generateToken(const char *spn, void **tokenData, size_t *tokenL
         GSS_C_NO_CREDENTIAL,   // use default credential (current user's TGT)
         &ctx,
         targetName,
-        GSS_SPNEGO_MECHANISM,  // SPNEGO mechanism
+        &spnegoMechanism,
         0,                     // no special flags
         0,                     // default lifetime
         GSS_C_NO_CHANNEL_BINDINGS,
@@ -87,10 +97,10 @@ static OM_uint32 generateToken(const char *spn, void **tokenData, size_t *tokenL
         NULL                   // time_rec
     );
 
+    *minorStatus = minor;
     gss_release_name(&minor, &targetName);
 
     if (major != GSS_S_COMPLETE && major != GSS_S_CONTINUE_NEEDED) {
-        *minorStatus = minor;
         if (ctx != GSS_C_NO_CONTEXT) {
             gss_delete_sec_context(&minor, &ctx, GSS_C_NO_BUFFER);
         }
@@ -113,6 +123,22 @@ static OM_uint32 generateToken(const char *spn, void **tokenData, size_t *tokenL
 
     return GSS_S_COMPLETE;
 }
+
+// appendStatus appends the human-readable messages for a GSS major
+// (GSS_C_GSS_CODE) or mechanism minor (GSS_C_MECH_CODE) status to buf.
+static void appendStatus(OM_uint32 code, int type, char *buf, size_t len) {
+    OM_uint32 minor, msgCtx = 0;
+    gss_buffer_desc msg;
+    do {
+        if (GSS_ERROR(gss_display_status(&minor, code, type, GSS_C_NO_OID, &msgCtx, &msg))) {
+            return;
+        }
+        size_t used = strlen(buf);
+        snprintf(buf + used, len - used, "%s%.*s", used > 0 ? ": " : "",
+                 (int)msg.length, (char *)msg.value);
+        gss_release_buffer(&minor, &msg);
+    } while (msgCtx != 0);
+}
 */
 import "C"
 
@@ -121,15 +147,14 @@ import (
 	"unsafe"
 )
 
-// checkKerberosTicket returns true if valid Kerberos credentials exist.
-// Uses GSS.framework to check the system credential store, which includes
-// tickets managed by Apple SSO and the Ticket Viewer app.
+// checkKerberosTicket returns true if valid Kerberos credentials exist in
+// the default credential cache.
 func checkKerberosTicket() bool {
 	return C.hasCredential() == 1
 }
 
 // generateSPNEGOToken creates a SPNEGO token for the given proxy host using
-// the macOS GSS.framework and the current user's Kerberos TGT.
+// the current user's Kerberos TGT.
 func generateSPNEGOToken(proxyHost string) ([]byte, error) {
 	spn := "HTTP@" + proxyHost
 	cSPN := C.CString(spn)
@@ -145,11 +170,21 @@ func generateSPNEGOToken(proxyHost string) ([]byte, error) {
 	}
 
 	if major != C.GSS_S_COMPLETE {
-		return nil, fmt.Errorf("gss_init_sec_context failed: major=%d minor=%d", major, minorStatus)
+		return nil, fmt.Errorf("GSS-API error for %s: %s", spn,
+			gssStatusString(major, minorStatus))
 	}
 	if tokenLen == 0 {
-		return nil, fmt.Errorf("gss_init_sec_context returned empty token")
+		return nil, fmt.Errorf("GSS-API returned an empty token for %s", spn)
 	}
 
 	return C.GoBytes(tokenData, C.int(tokenLen)), nil
+}
+
+func gssStatusString(major, minor C.OM_uint32) string {
+	var buf [1024]C.char
+	C.appendStatus(major, C.GSS_C_GSS_CODE, &buf[0], C.size_t(len(buf)))
+	if minor != 0 {
+		C.appendStatus(minor, C.GSS_C_MECH_CODE, &buf[0], C.size_t(len(buf)))
+	}
+	return C.GoString(&buf[0])
 }

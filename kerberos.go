@@ -108,7 +108,8 @@ func (n *negotiateAuthenticator) do(req *http.Request, rt http.RoundTripper) (*h
 
 	token, err := generateSPNEGOToken(proxyHost)
 	if err != nil {
-		log.Printf("Error generating SPNEGO token for %s: %v", proxyHost, err)
+		log.Printf("Error generating SPNEGO token for %s: %v "+
+			"(check your ticket with klist, renew it with kinit)", proxyHost, err)
 		return nil, err
 	}
 
